@@ -1,0 +1,42 @@
+@import "tailwindcss";
+
+@media print {
+  @page {
+    margin: 0;
+  }
+  body * {
+    visibility: hidden;
+  }
+  #print-receipt,
+  #print-receipt *,
+  #print-area,
+  #print-area * {
+    visibility: visible;
+  }
+  #print-receipt,
+  #print-area {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+  }
+  /* Each slip starts on its own thermal page so the kitchen ticket and the
+     customer receipt come out as two separate slips from one print action. */
+  .print-slip {
+    page-break-after: always;
+    break-after: page;
+  }
+  .print-slip:last-child {
+    page-break-after: auto;
+    break-after: auto;
+  }
+  /* When a single slip is chosen, hide the other one from the print job. */
+  #print-area.only-kitchen .slip-customer,
+  #print-area.only-customer .slip-kitchen {
+    display: none !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+}
+
