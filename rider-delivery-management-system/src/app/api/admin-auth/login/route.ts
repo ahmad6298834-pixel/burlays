@@ -12,6 +12,8 @@ export async function POST(request: NextRequest) {
     return Response.json({ error: "Username/email and password are required" }, { status: 400 });
   }
 
+  
+
   const admin = await verifyAdminCredentials(identifier, password);
   if (!admin) {
     // Deliberately generic so the response cannot be used to enumerate accounts.
