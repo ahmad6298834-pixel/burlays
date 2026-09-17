@@ -7,19 +7,20 @@ import { NextRequest } from "next/server";
 
 export const dynamic = "force-dynamic";
 
-
-
 export async function GET() {
   const admin = await getCurrentAdmin();
   if (!admin) return Response.json({ error: "Unauthorized" }, { status: 401 });
   return Response.json(admin);
 }
 
+
+
 /** Updates profile details and/or password. Never returns the password hash. */
 export async function PATCH(request: NextRequest) {
   const admin = await getCurrentAdmin();
   if (!admin) return Response.json({ error: "Unauthorized" }, { status: 401 });
 
+  
   const body = await request.json().catch(() => ({}));
   const updates: Partial<typeof adminUsers.$inferInsert> = { updatedAt: new Date() };
 
