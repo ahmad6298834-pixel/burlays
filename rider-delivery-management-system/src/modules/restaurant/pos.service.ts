@@ -456,3 +456,194 @@ export async function listRestaurantOrders(limit = 50) {
     deliveryStatus: deliveryRows.find((d) => d.id === r.deliveryOrderId)?.status ?? null,
   }));
 }
+
+/**
+ * Permanently deletes a restaurant order and its line items.
+ *
+ * • The restaurant_order_items / deal_items / extras rows are automatically
+ *   removed via FK cascade (onDelete: cascade) so no manual cleanup is needed.
+ * • For DELIVERY orders the linked row in the delivery-management `orders`
+ *   table is deleted first — the FK restaurantOrders.deliveryOrderId has
+ *   onDelete: set null, so deleting `orders` before `restaurantOrders` is
+ *   safe and the cascade path remains intact.
+ * • Master data (customers, riders, locations, menu items, deals) is
+ *   never touched.
+ * • Dashboard stats, reports and rider ledgers are computed live from the
+ *   database, so they automatically reflect the deletion with no extra work.
+ */
+export async function deleteRestaurantOrder(restaurantOrderId: number) {
+  const [ro] = await db
+    .select()
+    .from(restaurantOrders)
+    .where(eq(restaurantOrders.id, restaurantOrderId))
+    .limit(1);
+  if (!ro) return { error: "Order not found" } as const;
+
+  // Delete the linked delivery-management order first (if any) so the FK on
+  // restaurantOrders.deliveryOrderId resolves cleanly.
+  if (ro.deliveryOrderId) {
+    await db.delete(orders).where(eq(orders.id, ro.deliveryOrderId));
+  }
+
+  // Deleting restaurantOrders cascades to restaurantOrderItems → dealItems / extras.
+  await db.delete(restaurantOrders).where(eq(restaurantOrders.id, restaurantOrderId));
+
+  return { ok: true } as const;
+}
+
+export type UpdateOrderInput = {
+  lines: CartLineInput[];
+  customerName?: string | null;
+  customerPhone?: string | null;
+  locationId?: number | null;
+  riderId?: number | null;
+  customerDeliveryCharge?: number;
+  paymentMethod?: string;
+};
+
+/**
+ * Updates an EXISTING restaurant order in place — same order id / order number.
+ *
+ * • Lines are re-priced server-side and then fully replaced (FK cascade removes
+ *   the old deal items / extras). The order number, id, date and time are kept.
+ * • For DELIVERY orders the linked delivery-management row is updated too, so
+ *   the rider app, earnings, ledger and reports all stay correct; rider changes
+ *   re-notify the new rider exactly like a manual rider re-assignment would.
+ * • Master data (customers, riders, locations, menu items) is never deleted.
+ */
+export async function updateRestaurantOrder(orderId: number, input: UpdateOrderInput) {
+  const [existing] = await db.select().from(restaurantOrders).where(eq(restaurantOrders.id, orderId)).limit(1);
+  if (!existing) return { error: "Order not found" };
+
+  const isDelivery = existing.orderType === "delivery";
+
+  const { priced, error } = await priceCart(input.lines);
+  if (error) return { error };
+  if (priced.length === 0) return { error: "Cart is empty" };
+
+  const subtotal = priced.reduce((sum, l) => sum + l.lineTotal, 0);
+
+  // Location / rider metadata (delivery only). Existing snapshots are kept unless
+  // the location actually changes.
+  let locationId = existing.locationId;
+  let locationName = existing.locationName;
+  let riderDeliveryEarning = Number(existing.riderDeliveryEarning);
+  let customerDeliveryCharge = Number(existing.customerDeliveryCharge);
+
+  if (isDelivery) {
+    if (input.locationId) {
+      const [loc] = await db.select().from(locations).where(eq(locations.id, Number(input.locationId))).limit(1);
+      if (!loc) return { error: "Delivery location not found" };
+      locationId = loc.id;
+      locationName = loc.name;
+      // A real location change re-snapshots the rider earning from the new location.
+      if (loc.id !== existing.locationId) riderDeliveryEarning = Number(loc.deliveryCharge);
+    }
+    customerDeliveryCharge = Math.max(0, Number(input.customerDeliveryCharge) || 0);
+  }
+
+  let riderId = existing.riderId;
+  let riderName = existing.riderName;
+  if (isDelivery && input.riderId) {
+    const [rider] = await db.select().from(riders).where(eq(riders.id, Number(input.riderId))).limit(1);
+    if (!rider) return { error: "Rider not found" };
+    riderId = rider.id;
+    riderName = rider.name;
+  }
+
+  const total = subtotal + customerDeliveryCharge;
+
+  const [updated] = await db
+    .update(restaurantOrders)
+    .set({
+      customerName: input.customerName == null ? existing.customerName : input.customerName.trim() || null,
+      customerPhone: input.customerPhone == null ? existing.customerPhone : input.customerPhone.trim() || null,
+      locationId,
+      locationName,
+      riderId,
+      riderName,
+      subtotal,
+      customerDeliveryCharge,
+      riderDeliveryEarning,
+      total,
+      paymentMethod: input.paymentMethod || existing.paymentMethod,
+    })
+    .where(eq(restaurantOrders.id, orderId))
+    .returning();
+  if (!updated) return { error: "Could not update the order" };
+
+  // Replace the line items: delete old (cascade removes deal items / extras), insert new.
+  await db.delete(restaurantOrderItems).where(eq(restaurantOrderItems.restaurantOrderId, orderId));
+
+  for (const line of priced) {
+    const [savedLine] = await db
+      .insert(restaurantOrderItems)
+      .values({
+        restaurantOrderId: orderId,
+        lineType: line.lineType,
+        menuItemId: line.menuItemId,
+        dealId: line.dealId,
+        name: line.name,
+        sizeId: line.sizeId,
+        sizeName: line.sizeName,
+        unitPrice: line.unitPrice,
+        quantity: line.quantity,
+        lineTotal: line.lineTotal,
+      })
+      .returning();
+
+    if (line.extras.length) {
+      await db.insert(restaurantOrderItemExtras).values(
+        line.extras.map((e) => ({
+          orderItemId: savedLine.id,
+          extraId: e.extraId,
+          name: e.name,
+          price: e.price,
+        }))
+      );
+    }
+
+    if (line.dealItems.length) {
+      await db.insert(restaurantOrderDealItems).values(
+        line.dealItems.map((di) => ({
+          orderItemId: savedLine.id,
+          name: di.name,
+          sizeName: di.sizeName,
+          quantity: di.quantity,
+        }))
+      );
+    }
+  }
+
+  // DELIVERY only: keep the linked delivery-management row in sync.
+  if (isDelivery && existing.deliveryOrderId) {
+    const linkedRiderName = riderId ? riderName : "Unassigned";
+    await db
+      .update(orders)
+      .set({
+        riderId,
+        riderName: linkedRiderName ?? "Unassigned",
+        customerName: updated.customerName ?? "Walk-in",
+        customerPhone: updated.customerPhone,
+        locationId,
+        locationName: locationName ?? "",
+        deliveryCharge: riderDeliveryEarning,
+        totalBill: updated.total,
+        paymentMethod: updated.paymentMethod,
+      })
+      .where(eq(orders.id, existing.deliveryOrderId));
+
+    // Rider changed -> tell the new rider, but only while the order is still pending.
+    if (riderId && riderId !== existing.riderId) {
+      const [deliveryOrder] = await db.select().from(orders).where(eq(orders.id, existing.deliveryOrderId)).limit(1);
+      if (deliveryOrder && deliveryOrder.status === "Assigned") {
+        const [rider] = await db.select().from(riders).where(eq(riders.id, riderId)).limit(1);
+        if (rider) void notifyRiderOfNewOrder(rider, deliveryOrder);
+      }
+    }
+  }
+
+  // Re-read so the caller gets the same shape as the create / GET flow.
+  const full = await getRestaurantOrder(orderId);
+  return { order: full };
+}

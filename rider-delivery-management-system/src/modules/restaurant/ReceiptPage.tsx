@@ -88,13 +88,15 @@ export default function ReceiptPage({ params }: { params: Promise<{ id: string }
 
         <table className="w-full">
           <tbody>
-            <Row label="Order #" value={order.orderNumber} />
+            <Row label="Order No" value={order.orderNumber} />
             <Row label="Type" value={ORDER_TYPE_LABELS[order.orderType as RestaurantOrderType] ?? order.orderType} />
             <Row label="Date" value={formatDate(order.orderDate)} />
             <Row label="Time" value={formatTime(order.orderTime)} />
             {order.customerName && <Row label="Customer" value={order.customerName} />}
-            {order.customerPhone && <Row label="Phone" value={order.customerPhone} />}
+            {order.customerPhone && <Row label="Contact" value={order.customerPhone} />}
             {isDelivery && order.locationName && <Row label="Location" value={order.locationName} />}
+            {/* Assigned rider always comes from the order's own rider data. */}
+            {isDelivery && <Row label="Rider" value={order.riderName ?? "Not Assigned"} />}
           </tbody>
         </table>
 
@@ -145,7 +147,7 @@ export default function ReceiptPage({ params }: { params: Promise<{ id: string }
 
         <p>------------------------------</p>
         <div className="flex justify-between text-[14px] font-bold">
-          <span>TOTAL</span>
+          <span>Total Bill</span>
           <span>{formatCurrency(order.total)}</span>
         </div>
         <p>------------------------------</p>

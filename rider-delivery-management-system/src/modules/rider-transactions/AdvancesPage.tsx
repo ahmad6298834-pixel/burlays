@@ -36,6 +36,11 @@ export default function AdvancesPage() {
   const [note, setNote] = useState("");
   const [error, setError] = useState("");
   const [showForm, setShowForm] = useState(false);
+  const [editingTx, setEditingTx] = useState<Transaction | null>(null);
+  const [success, setSuccess] = useState("");
+
+  const [deletingTx, setDeletingTx] = useState<Transaction | null>(null);
+  const [deleteError, setDeleteError] = useState("");
 
   const loadRiders = () => fetch("/api/riders").then((r) => r.json()).then(setRiders);
   const loadTransactions = (silent = false) => {
@@ -52,20 +57,42 @@ export default function AdvancesPage() {
 
   useEffect(() => {
     loadRiders();
-    // Keep rider balances current as delivered orders and new transactions come in.
     const interval = setInterval(loadRiders, 10000);
     return () => clearInterval(interval);
   }, []);
 
-  useEffect(() => loadTransactions(), [filterRider]);
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (filterRider) params.set("riderId", filterRider);
+    fetch(`/api/transactions?${params.toString()}`)
+      .then((r) => r.json())
+      .then((d) => {
+        setTransactions(d);
+        setLoading(false);
+      });
+  }, [filterRider]);
 
   const openForm = () => {
+    setEditingTx(null);
     setRiderId("");
     setType("advance");
     setAmount("");
     setDate(todayISO());
     setNote("");
     setError("");
+    setSuccess("");
+    setShowForm(true);
+  };
+
+  const openEditForm = (tx: Transaction) => {
+    setEditingTx(tx);
+    setRiderId(String(tx.riderId));
+    setType(tx.type);
+    setAmount(String(tx.amount));
+    setDate(tx.date);
+    setNote(tx.note ?? "");
+    setError("");
+    setSuccess("");
     setShowForm(true);
   };
 
@@ -75,19 +102,66 @@ export default function AdvancesPage() {
       return setError("Enter a valid amount");
     if (!date) return setError("Date is required");
 
+    const payload: Record<string, unknown> = {
+      riderId: Number(riderId),
+      type,
+      amount: Number(amount),
+      date,
+      note,
+    };
+
+    if (editingTx) {
+      payload.id = editingTx.id;
+      const res = await fetch("/api/transactions", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const d = await res.json();
+        setError(d.error ?? "Something went wrong");
+        return;
+      }
+      setShowForm(false);
+      setSuccess("Advance/Ledger entry updated successfully.");
+      loadRiders();
+      loadTransactions(true);
+      setTimeout(() => setSuccess(""), 4000);
+    } else {
+      const res = await fetch("/api/transactions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const d = await res.json();
+        setError(d.error ?? "Something went wrong");
+        return;
+      }
+      setShowForm(false);
+      loadRiders();
+      loadTransactions();
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!deletingTx) return;
+    setDeleteError("");
     const res = await fetch("/api/transactions", {
-      method: "POST",
+      method: "DELETE",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ riderId: Number(riderId), type, amount: Number(amount), date, note }),
+      body: JSON.stringify({ id: deletingTx.id }),
     });
     if (!res.ok) {
       const d = await res.json();
-      setError(d.error ?? "Something went wrong");
+      setDeleteError(d.error ?? "Failed to delete");
       return;
     }
-    setShowForm(false);
+    setDeletingTx(null);
+    setSuccess("Advance/Ledger entry deleted successfully.");
     loadRiders();
-    loadTransactions();
+    loadTransactions(true);
+    setTimeout(() => setSuccess(""), 4000);
   };
 
   return (
@@ -97,6 +171,12 @@ export default function AdvancesPage() {
         subtitle="Record rider advances, payments and view running balances"
         action={<Button onClick={openForm}>+ New Transaction</Button>}
       />
+
+      {success && (
+        <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
+          {success}
+        </div>
+      )}
 
       <div className="mb-6">
         <h2 className="mb-3 text-base font-semibold text-slate-900">Rider Balances</h2>
@@ -156,6 +236,14 @@ export default function AdvancesPage() {
                 <p className="shrink-0 font-semibold text-slate-900">{formatCurrency(tx.amount)}</p>
               </div>
               {tx.note && <p className="mt-2 text-sm text-slate-500">{tx.note}</p>}
+              <div className="mt-3 flex gap-2">
+                <Button variant="secondary" onClick={() => openEditForm(tx)}>
+                  Update
+                </Button>
+                <Button variant="secondary" onClick={() => { setDeletingTx(tx); setDeleteError(""); }}>
+                  Delete
+                </Button>
+              </div>
             </Card>
           ))}
         </div>
@@ -164,7 +252,7 @@ export default function AdvancesPage() {
       {/* Desktop / tablet: full table */}
       {!loading && transactions.length > 0 && (
         <Card className="hidden overflow-x-auto p-0 md:block">
-          <table className="w-full min-w-[640px] text-sm">
+          <table className="w-full min-w-[720px] text-sm">
             <thead className="bg-slate-50 text-left text-xs uppercase tracking-wide text-slate-500">
               <tr>
                 <th className="px-4 py-3">Date</th>
@@ -172,6 +260,7 @@ export default function AdvancesPage() {
                 <th className="px-4 py-3">Type</th>
                 <th className="px-4 py-3 text-right">Amount</th>
                 <th className="px-4 py-3">Note</th>
+                <th className="px-4 py-3">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -182,6 +271,16 @@ export default function AdvancesPage() {
                   <td className="px-4 py-3">{TYPE_LABELS[tx.type] ?? tx.type}</td>
                   <td className="px-4 py-3 text-right">{formatCurrency(tx.amount)}</td>
                   <td className="px-4 py-3 text-slate-500">{tx.note || "-"}</td>
+                  <td className="px-4 py-3">
+                    <div className="flex gap-2">
+                      <Button variant="secondary" onClick={() => openEditForm(tx)}>
+                        Update
+                      </Button>
+                      <Button variant="secondary" onClick={() => { setDeletingTx(tx); setDeleteError(""); }}>
+                        Delete
+                      </Button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -192,7 +291,9 @@ export default function AdvancesPage() {
       {showForm && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4">
           <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-xl bg-white p-5 shadow-xl sm:p-6">
-            <h2 className="mb-4 text-lg font-semibold text-slate-900">New Rider Transaction</h2>
+            <h2 className="mb-4 text-lg font-semibold text-slate-900">
+              {editingTx ? "Update Transaction" : "New Rider Transaction"}
+            </h2>
             <div className="space-y-3">
               <div>
                 <Label>Rider</Label>
@@ -231,7 +332,27 @@ export default function AdvancesPage() {
               <Button variant="secondary" onClick={() => setShowForm(false)}>
                 Cancel
               </Button>
-              <Button onClick={submit}>Save</Button>
+              <Button onClick={submit}>{editingTx ? "Save Changes" : "Save"}</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deletingTx && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-xl sm:p-6">
+            <h2 className="mb-2 text-lg font-semibold text-slate-900">Delete Transaction</h2>
+            <p className="text-sm text-slate-600">
+              Are you sure you want to delete the {TYPE_LABELS[deletingTx.type]?.toLowerCase() ?? deletingTx.type} entry
+              of <span className="font-medium">{formatCurrency(deletingTx.amount)}</span> for{" "}
+              <span className="font-medium">{deletingTx.riderName}</span>?
+            </p>
+            {deleteError && <p className="mt-2 text-sm text-rose-600">{deleteError}</p>}
+            <div className="mt-5 flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setDeletingTx(null)}>
+                Cancel
+              </Button>
+              <Button onClick={confirmDelete}>Delete</Button>
             </div>
           </div>
         </div>

@@ -22,9 +22,13 @@ export default function RestaurantOrdersPage() {
   const [tab, setTab] = useState<Tab>("all");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState<RestaurantOrderListRow | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const load = (silent = false) => {
     if (!silent) setLoading(true);
+    setNotice("");
     fetch("/api/restaurant/orders")
       .then((r) => r.json())
       .then((d) => {
@@ -59,6 +63,25 @@ export default function RestaurantOrdersPage() {
     load(true);
   };
 
+  /** Deletes the order via the backend and removes it from the listing. */
+  const deleteOrder = async () => {
+    if (!confirmDelete) return;
+    setDeleting(true);
+    setError("");
+    const res = await fetch(`/api/restaurant/orders/${confirmDelete.id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      setError(d.error ?? "Unable to delete order.");
+      setDeleting(false);
+      setConfirmDelete(null);
+      return;
+    }
+    setOrders((prev) => prev.filter((o) => o.id !== confirmDelete.id));
+    setNotice("Order deleted successfully.");
+    setDeleting(false);
+    setConfirmDelete(null);
+  };
+
   const visible = orders.filter((o) => tab === "all" || o.orderType === tab);
 
   return (
@@ -69,6 +92,7 @@ export default function RestaurantOrdersPage() {
       />
 
       {error && <p className="mb-4 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
+      {notice && <p className="mb-4 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{notice}</p>}
 
       <div className="mb-4 flex gap-1 overflow-x-auto border-b border-slate-200">
         {TABS.map((t) => (
@@ -174,7 +198,12 @@ export default function RestaurantOrdersPage() {
                 </div>
               )}
 
-              <div className="mt-3 grid grid-cols-2 gap-2">
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                <Link href={`/restaurant/orders/${o.id}/edit`} className="contents">
+                  <Button variant="secondary" className="w-full">
+                    ✏️ Update
+                  </Button>
+                </Link>
                 <Link href={`/restaurant/orders/${o.id}/receipt`} className="contents">
                   <Button variant="secondary" className="w-full">
                     🧾 Receipt
@@ -186,10 +215,47 @@ export default function RestaurantOrdersPage() {
                   </Button>
                 </Link>
               </div>
+
+              <div className="mt-2">
+                <Button variant="danger" className="w-full" onClick={() => setConfirmDelete(o)}>
+                  🗑️ Delete Order
+                </Button>
+              </div>
             </Card>
           );
         })}
       </div>
+
+      {confirmDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4">
+          <Card className="w-full max-w-sm p-5">
+            <h3 className="text-base font-semibold text-slate-900">Delete order?</h3>
+            <p className="mt-1 text-sm text-slate-600">
+              Are you sure you want to delete this order?
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              {confirmDelete.orderNumber}
+              {confirmDelete.customerName ? ` · ${confirmDelete.customerName}` : ""}
+              {" — this cannot be undone."}
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button
+                variant="secondary"
+                disabled={deleting}
+                onClick={() => {
+                  setConfirmDelete(null);
+                  setDeleting(false);
+                }}
+              >
+                Cancel
+              </Button>
+              <Button variant="danger" disabled={deleting} onClick={deleteOrder}>
+                {deleting ? "Deleting..." : "Delete"}
+              </Button>
+            </div>
+          </Card>
+        </div>
+      )}
     </div>
   );
 }
